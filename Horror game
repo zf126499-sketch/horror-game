@@ -1,0 +1,220 @@
+import pygame
+import math
+import random
+
+# --- Configuration ---
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+BG_COLOR = (5, 5, 10)     # Very dark blue/black
+PLAYER_COLOR = (0, 255, 0) 
+WALL_DOT_COLOR = (0, 255, 0)   # Green sonar return
+MONSTER_DOT_COLOR = (255, 0, 0) # Red sonar return
+FPS = 60
+
+# Sonar Settings
+NUM_RAYS = 360            
+MAX_DISTANCE = 300        
+PULSE_SPEED = 8           
+FADE_SPEED = 2            
+
+# --- Class Definitions ---
+
+class Wall:
+    def __init__(self, x, y, w, h):
+        self.rect = pygame.Rect(x, y, w, h)
+
+class Monster:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, 30, 30)
+        self.base_speed = 1.0       # Creeps slowly
+        self.hunt_speed = 4.5       # Runs fast when it hears you
+        self.agitation = 0          # How angry is it?
+        self.pos_x = float(x)
+        self.pos_y = float(y)
+
+    def move(self, player_rect):
+        # 1. Determine Speed based on Agitation
+        current_speed = self.base_speed
+        if self.agitation > 0:
+            current_speed = self.hunt_speed
+            self.agitation -= 1 # Cool down slowly
+        
+        # 2. Vector Math: Move towards player
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        distance = math.hypot(dx, dy)
+
+        if distance != 0:
+            dx, dy = dx / distance, dy / distance # Normalize vector
+            self.pos_x += dx * current_speed
+            self.pos_y += dy * current_speed
+            
+        self.rect.x = int(self.pos_x)
+        self.rect.y = int(self.pos_y)
+
+    def hear_sound(self):
+        # Called when player presses SPACE
+        self.agitation = 120 # Angry for 2 seconds (120 frames)
+
+class Player:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, 15, 15)
+        self.speed = 3
+
+    def move(self, keys, walls):
+        dx, dy = 0, 0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]: dx = -self.speed
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]: dx = self.speed
+        if keys[pygame.K_UP] or keys[pygame.K_w]: dy = -self.speed
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]: dy = self.speed
+
+        # Collision (X)
+        self.rect.x += dx
+        for wall in walls:
+            if self.rect.colliderect(wall.rect):
+                if dx > 0: self.rect.right = wall.rect.left
+                if dx < 0: self.rect.left = wall.rect.right
+        # Collision (Y)
+        self.rect.y += dy
+        for wall in walls:
+            if self.rect.colliderect(wall.rect):
+                if dy > 0: self.rect.bottom = wall.rect.top
+                if dy < 0: self.rect.top = wall.rect.bottom
+
+class SonarPulse:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.radius = 10
+        self.active = True
+        self.hit_points = [] # Stores [x, y, alpha, color_type]
+
+    def update(self, walls, monster):
+        self.radius += PULSE_SPEED
+        
+        if self.radius < MAX_DISTANCE:
+            # Raycast
+            for angle in range(0, 360, 4): # Step of 4 for performance
+                rads = math.radians(angle)
+                target_x = self.x + math.cos(rads) * self.radius
+                target_y = self.y + math.sin(rads) * self.radius
+                
+                point_rect = pygame.Rect(target_x, target_y, 2, 2)
+                
+                # Check Monster Hit
+                if point_rect.colliderect(monster.rect):
+                     self.hit_points.append([target_x, target_y, 255, MONSTER_DOT_COLOR])
+                     continue # Don't check walls if we hit the monster
+
+                # Check Wall Hit
+                for wall in walls:
+                    if wall.rect.colliderect(point_rect):
+                        self.hit_points.append([target_x, target_y, 255, WALL_DOT_COLOR])
+                        break 
+
+        # Fade points
+        for point in self.hit_points:
+            point[2] -= FADE_SPEED
+        
+        self.hit_points = [p for p in self.hit_points if p[2] > 0]
+
+        if self.radius > MAX_DISTANCE and not self.hit_points:
+            self.active = False
+
+    def draw(self, surface):
+        for px, py, alpha, color in self.hit_points:
+            s = pygame.Surface((4, 4)) 
+            s.set_alpha(alpha)
+            s.fill(color)
+            surface.blit(s, (px, py))
+        
+        # Draw ring
+        if self.radius < MAX_DISTANCE:
+            pygame.draw.circle(surface, (0, 30, 0), (self.x, self.y), int(self.radius), 1)
+
+# --- Main Game Loop ---
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("THE REVERBERATION - Don't Make Noise")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("arial", 24)
+
+    # Level Layout
+    walls = [
+        Wall(0, 0, 800, 20), Wall(0, 580, 800, 20), # Top/Bottom
+        Wall(0, 0, 20, 600), Wall(780, 0, 20, 600), # Left/Right
+        Wall(200, 200, 20, 300), Wall(500, 100, 20, 300), # Pillars
+        Wall(300, 400, 300, 20)
+    ]
+
+    player = Player(100, 100)
+    monster = Monster(600, 500) # Start far away
+    pulses = []
+    
+    game_over = False
+
+    running = True
+    while running:
+        # Event Handling
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            
+            if not game_over and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    pulses.append(SonarPulse(player.rect.centerx, player.rect.centery))
+                    monster.hear_sound() # <--- Triggers the monster!
+
+        if not game_over:
+            # Updates
+            keys = pygame.key.get_pressed()
+            player.move(keys, walls)
+            monster.move(player.rect)
+
+            for pulse in pulses:
+                pulse.update(walls, monster)
+            pulses = [p for p in pulses if p.active]
+
+            # Check Death
+            if player.rect.colliderect(monster.rect):
+                game_over = True
+                print("YOU DIED.")
+
+        # Draw
+        screen.fill(BG_COLOR)
+
+        if not game_over:
+            # Only draw the player explicitly
+            pygame.draw.rect(screen, PLAYER_COLOR, player.rect)
+            
+            # Draw Sonar (This reveals the monster and walls)
+            for pulse in pulses:
+                pulse.draw(screen)
+
+            # DEBUG: Uncomment to see invisible monster for testing
+            # pygame.draw.rect(screen, (50, 0, 0), monster.rect)
+        
+        else:
+            # Game Over Screen
+            text = font.render("THE REVERBERATION CAUGHT YOU", True, (255, 0, 0))
+            screen.blit(text, (SCREEN_WIDTH//2 - 150, SCREEN_HEIGHT//2))
+            text2 = font.render("Press SPACE to restart", True, (255, 255, 255))
+            screen.blit(text2, (SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 + 40))
+            
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_SPACE]:
+                # Reset
+                player = Player(100, 100)
+                monster = Monster(600, 500)
+                pulses = []
+                game_over = False
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
